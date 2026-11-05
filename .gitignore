@@ -23,3 +23,8 @@ data/processed/*
 # Operating system
 .DS_Store
 Thumbs.db
+
+# Backup files
+*.bak
+# Generated raw datasets
+data/raw/*.csv
