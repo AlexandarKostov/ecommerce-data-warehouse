@@ -1050,49 +1050,82 @@ def save_order_items(
 # Local execution
 # ---------------------------------------------------------------------
 
-
-
 if __name__ == "__main__":
 
-    # Generate small datasets for initial testing.
-    customer_data = generate_customers(count=10)
-    product_data = generate_products(count=10)
+    print("=" * 60)
+    print("E-COMMERCE SYNTHETIC DATA GENERATION")
+    print("=" * 60)
 
-    order_data = generate_orders(
-        customers=customer_data,
-        count=10,
+    print("\nGeneration configuration:")
+    print(f"Random seed: {RANDOM_SEED}")
+    print(f"Reference date: {REFERENCE_DATE}")
+    print(f"Customers target: {CUSTOMER_COUNT:,}")
+    print(f"Products target: {PRODUCT_COUNT:,}")
+    print(f"Orders target: {ORDER_COUNT:,}")
+
+    print("\n[1/5] Generating customers...")
+    customer_data = generate_customers(
+        count=CUSTOMER_COUNT,
+        seed=RANDOM_SEED,
     )
 
+    print("[2/5] Generating products...")
+    product_data = generate_products(
+        count=PRODUCT_COUNT,
+        seed=RANDOM_SEED,
+    )
+
+    print("[3/5] Generating orders...")
+    order_data = generate_orders(
+        customers=customer_data,
+        count=ORDER_COUNT,
+        seed=RANDOM_SEED,
+    )
+
+    print("[4/5] Generating order items...")
     order_item_data = generate_order_items(
         orders=order_data,
         products=product_data,
+        seed=RANDOM_SEED,
     )
 
+    print("[5/5] Generating payments...")
     payment_data = generate_payments(
         orders=order_data,
         order_items=order_item_data,
+        seed=RANDOM_SEED,
     )
 
-    # Save generated datasets.
+    print("\nSaving generated datasets...")
+
     customer_file = save_customers(customer_data)
     product_file = save_products(product_data)
     order_file = save_orders(order_data)
     order_item_file = save_order_items(order_item_data)
     payment_file = save_payments(payment_data)
 
-    # Display generation summary.
-    print(f"Generated customers: {len(customer_data)}")
-    print(f"Generated products: {len(product_data)}")
-    print(f"Generated orders: {len(order_data)}")
-    print(f"Generated order items: {len(order_item_data)}")
-    print(f"Generated payments: {len(payment_data)}")
+    print("\n" + "=" * 60)
+    print("GENERATION COMPLETED")
+    print("=" * 60)
+
+    print(f"Customers:    {len(customer_data):,}")
+    print(f"Products:     {len(product_data):,}")
+    print(f"Orders:       {len(order_data):,}")
+    print(f"Order items:  {len(order_item_data):,}")
+    print(f"Payments:     {len(payment_data):,}")
 
     print("\nGenerated files:")
-    print(customer_file)
-    print(product_file)
-    print(order_file)
-    print(order_item_file)
-    print(payment_file)
+
+    for generated_file in (
+        customer_file,
+        product_file,
+        order_file,
+        order_item_file,
+        payment_file,
+    ):
+        print(f"- {generated_file}")
 
     print("\nPayment preview:")
-    print(payment_data.head(10))
+    print(payment_data.head(10).to_string(index=False))
+
+    print("\nSynthetic data generation finished successfully.")

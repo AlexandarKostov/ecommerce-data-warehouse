@@ -26,5 +26,9 @@ Thumbs.db
 
 # Backup files
 *.bak
+
 # Generated raw datasets
 data/raw/*.csv
+
+# Generated quality datasets
+data/quality/*.csv
