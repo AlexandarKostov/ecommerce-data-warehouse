@@ -4,8 +4,16 @@ Staging loader module.
 
 Loads extracted ecommerce source datasets into MySQL staging tables.
 
-Each execution creates a separate ETL audit record. All five staging
-datasets and the SUCCESS audit update are committed in one transaction.
+Each execution creates a separate ETL audit record.
+
+The loader supports two execution modes:
+
+1. Finalized loading:
+   Staging inserts and the SUCCESS audit update are committed atomically.
+
+2. Deferred finalization:
+   Staging inserts and progress counters are committed while the
+   audit record remains RUNNING for subsequent validation.
 """
 
 from pathlib import Path
@@ -21,6 +29,7 @@ from src.extraction.csv_extractor import (
 
 
 BATCH_SIZE = 1_000
+PIPELINE_NAME = "ecommerce_data_warehouse"
 
 
 class StagingLoadError(Exception):
@@ -28,12 +37,7 @@ class StagingLoadError(Exception):
 
 
 def _create_etl_run(engine: Engine) -> int:
-    """
-    Create and commit a new RUNNING audit record.
-
-    Returns:
-        The generated ETL run ID.
-    """
+    """Create and commit a new RUNNING ETL audit record."""
 
     statement = text(
         """
@@ -45,7 +49,7 @@ def _create_etl_run(engine: Engine) -> int:
     with engine.begin() as connection:
         result = connection.execute(
             statement,
-            {"pipeline_name": "ecommerce_data_warehouse"},
+            {"pipeline_name": PIPELINE_NAME},
         )
 
         run_id = result.lastrowid
@@ -58,6 +62,45 @@ def _create_etl_run(engine: Engine) -> int:
     return int(run_id)
 
 
+def _record_staging_progress(
+    connection: Any,
+    run_id: int,
+    records_extracted: int,
+    records_loaded: int,
+) -> None:
+    """
+    Update staging counters without finalizing the ETL run.
+
+    The audit record must remain RUNNING. The caller controls
+    the transaction.
+    """
+
+    statement = text(
+        """
+        UPDATE etl_pipeline_runs
+        SET
+            records_extracted = :records_extracted,
+            records_loaded = :records_loaded
+        WHERE run_id = :run_id
+          AND status = 'RUNNING'
+        """
+    )
+
+    result = connection.execute(
+        statement,
+        {
+            "run_id": run_id,
+            "records_extracted": records_extracted,
+            "records_loaded": records_loaded,
+        },
+    )
+
+    if result.rowcount != 1:
+        raise StagingLoadError(
+            f"Unable to record staging progress for ETL run {run_id}."
+        )
+
+
 def _update_etl_run(
     connection: Any,
     run_id: int,
@@ -67,7 +110,7 @@ def _update_etl_run(
     error_message: str | None = None,
 ) -> None:
     """
-    Update an ETL audit record using the caller's transaction.
+    Update the final status of an ETL audit record.
 
     The caller controls when this update is committed or rolled back.
     """
@@ -86,6 +129,7 @@ def _update_etl_run(
             records_rejected = 0,
             error_message = :error_message
         WHERE run_id = :run_id
+        AND status = 'RUNNING'
         """
     )
 
@@ -113,9 +157,7 @@ def _update_etl_run(
 def _validate_extracted_datasets(
     datasets: dict[str, pd.DataFrame],
 ) -> None:
-    """
-    Verify that all expected datasets are available and correctly shaped.
-    """
+    """Validate extracted datasets against the source configuration."""
 
     expected_tables = set(SOURCE_DATASETS)
     actual_tables = set(datasets)
@@ -125,7 +167,7 @@ def _validate_extracted_datasets(
 
     if missing_tables or unexpected_tables:
         raise StagingLoadError(
-            f"Invalid extracted datasets. "
+            "Invalid extracted datasets. "
             f"Missing: {sorted(missing_tables)}. "
             f"Unexpected: {sorted(unexpected_tables)}."
         )
@@ -162,22 +204,23 @@ def _insert_dataset(
     run_id: int,
 ) -> int:
     """
-    Insert one extracted dataset into its staging table.
+    Insert one dataset into its staging table in batches.
 
-    Inserts are executed in batches using parameterized SQL.
-    The caller controls the transaction.
+    Table and column names originate from the fixed project
+    configuration. Record values use parameterized SQL.
     """
 
     columns = list(dataframe.columns)
-    insert_columns = ["etl_run_id"] + columns
+    insert_columns = ["etl_run_id", *columns]
 
-    # Table and column names originate from fixed project configuration.
     column_sql = ", ".join(
-        f"`{column}`" for column in insert_columns
+        f"`{column}`"
+        for column in insert_columns
     )
 
     parameter_sql = ", ".join(
-        f":{column}" for column in insert_columns
+        f":{column}"
+        for column in insert_columns
     )
 
     statement = text(
@@ -212,10 +255,10 @@ def _mark_etl_run_failed(
     error_message: str,
 ) -> None:
     """
-    Mark a previously committed RUNNING audit record as FAILED.
+    Mark a committed RUNNING audit record as FAILED.
 
-    This uses a separate transaction because the staging transaction
-    has already been rolled back.
+    This uses an independent transaction because the staging
+    transaction has already been rolled back.
     """
 
     with engine.begin() as connection:
@@ -232,40 +275,34 @@ def _mark_etl_run_failed(
 def run_staging_load(
     engine: Engine,
     data_directory: Path | str | None = None,
+    finalize_run: bool = True,
 ) -> dict[str, Any]:
     """
-    Execute the complete CSV extraction and staging load.
+    Execute extraction and staging loading.
 
-    Processing:
-        1. Create an independently committed RUNNING audit record.
-        2. Extract all five CSV datasets.
-        3. Validate extracted dataset structure.
-        4. Load all staging tables in one transaction.
-        5. Update the audit record to SUCCESS in that transaction.
+    With finalize_run=True:
+        Staging inserts and the SUCCESS audit update commit together.
 
-    If extraction, validation, loading, or the SUCCESS audit update fails,
-    the staging transaction is rolled back and the audit record is marked
-    FAILED in a separate transaction.
+    With finalize_run=False:
+        Staging inserts and progress counters commit together.
+        The audit record remains RUNNING for validation.
 
-    Every execution creates a new ETL run.
-
-    Returns:
-        Summary containing run ID and record counts.
-
-    Raises:
-        StagingLoadError: If extraction, validation, or loading fails.
+    Any staging failure rolls back the staging transaction and
+    marks the audit record FAILED.
     """
 
-    run_id = _create_etl_run(engine)
+    if not isinstance(finalize_run, bool):
+        raise ValueError("finalize_run must be a boolean.")
 
+    run_id = _create_etl_run(engine)
     records_extracted = 0
 
     try:
-        # Extract source datasets.
-        if data_directory is None:
-            datasets = extract_csv_files()
-        else:
-            datasets = extract_csv_files(data_directory)
+        datasets = (
+            extract_csv_files()
+            if data_directory is None
+            else extract_csv_files(data_directory)
+        )
 
         _validate_extracted_datasets(datasets)
 
@@ -276,18 +313,14 @@ def run_staging_load(
 
         records_loaded = 0
 
-        # Staging inserts and SUCCESS audit update are atomic.
         with engine.begin() as connection:
-
             for staging_table, dataframe in datasets.items():
-                inserted_count = _insert_dataset(
+                records_loaded += _insert_dataset(
                     connection=connection,
                     staging_table=staging_table,
                     dataframe=dataframe,
                     run_id=run_id,
                 )
-
-                records_loaded += inserted_count
 
             if records_loaded != records_extracted:
                 raise StagingLoadError(
@@ -296,18 +329,25 @@ def run_staging_load(
                     f"loaded: {records_loaded}."
                 )
 
-            # This update commits together with all staging inserts.
-            _update_etl_run(
-                connection=connection,
-                run_id=run_id,
-                status="SUCCESS",
-                records_extracted=records_extracted,
-                records_loaded=records_loaded,
-            )
+            if finalize_run:
+                _update_etl_run(
+                    connection=connection,
+                    run_id=run_id,
+                    status="SUCCESS",
+                    records_extracted=records_extracted,
+                    records_loaded=records_loaded,
+                )
+            else:
+                _record_staging_progress(
+                    connection=connection,
+                    run_id=run_id,
+                    records_extracted=records_extracted,
+                    records_loaded=records_loaded,
+                )
 
         return {
             "run_id": run_id,
-            "status": "SUCCESS",
+            "status": "SUCCESS" if finalize_run else "RUNNING",
             "records_extracted": records_extracted,
             "records_loaded": records_loaded,
             "records_rejected": 0,
@@ -318,7 +358,6 @@ def run_staging_load(
         }
 
     except Exception as error:
-        # The staging transaction has rolled back automatically.
         try:
             _mark_etl_run_failed(
                 engine=engine,

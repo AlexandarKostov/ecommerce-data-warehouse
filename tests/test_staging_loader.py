@@ -2,8 +2,8 @@
 """
 Tests for the ecommerce staging loader.
 
-Uses isolated in-memory SQLite databases.
-No tests modify the real MySQL warehouse.
+All tests use isolated in-memory SQLite databases.
+The production MySQL warehouse is never modified.
 """
 
 import pandas as pd
@@ -13,10 +13,9 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
 from src.extraction.csv_extractor import (
-    SOURCE_DATASETS,
     CSVExtractionError,
+    SOURCE_DATASETS,
 )
-
 from src.loading import staging_loader
 from src.loading.staging_loader import (
     StagingLoadError,
@@ -24,14 +23,18 @@ from src.loading.staging_loader import (
 )
 
 
+# ---------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------
+
+
 @pytest.fixture
 def test_engine():
-    """Create an isolated in-memory database for each test."""
+    """Create an isolated SQLite database with the required ETL tables."""
 
     engine = create_engine("sqlite+pysqlite:///:memory:")
 
     with engine.begin() as connection:
-
         connection.execute(
             text(
                 """
@@ -52,7 +55,6 @@ def test_engine():
         )
 
         for staging_table, configuration in SOURCE_DATASETS.items():
-
             columns = configuration["columns"] + ["source_file"]
 
             column_definitions = [
@@ -60,10 +62,10 @@ def test_engine():
                 "`etl_run_id` BIGINT",
             ]
 
-            for column in columns:
-                column_definitions.append(
-                    f"`{column}` VARCHAR(255)"
-                )
+            column_definitions.extend(
+                f"`{column}` VARCHAR(255)"
+                for column in columns
+            )
 
             column_definitions.append(
                 "`loaded_at` DATETIME DEFAULT CURRENT_TIMESTAMP"
@@ -86,25 +88,24 @@ def test_engine():
 
 @pytest.fixture
 def sample_datasets():
-    """Build small source datasets matching the extractor schema."""
+    """Create small datasets matching the extraction configuration."""
 
     datasets = {}
 
     for staging_table, configuration in SOURCE_DATASETS.items():
-
-        file_name = configuration["file_name"]
         columns = configuration["columns"] + ["source_file"]
+        file_name = configuration["file_name"]
 
-        records = []
-
-        for record_number in range(2):
-            record = {
-                column: f"value_{record_number}"
-                for column in configuration["columns"]
+        records = [
+            {
+                **{
+                    column: f"value_{record_number}"
+                    for column in configuration["columns"]
+                },
+                "source_file": file_name,
             }
-
-            record["source_file"] = file_name
-            records.append(record)
+            for record_number in range(2)
+        ]
 
         datasets[staging_table] = pd.DataFrame(
             records,
@@ -114,8 +115,13 @@ def sample_datasets():
     return datasets
 
 
+# ---------------------------------------------------------------------
+# Test helpers
+# ---------------------------------------------------------------------
+
+
 def get_audit_record(engine: Engine, run_id: int) -> dict:
-    """Retrieve one ETL audit record."""
+    """Retrieve an ETL audit record by run ID."""
 
     with engine.connect() as connection:
         result = connection.execute(
@@ -135,28 +141,41 @@ def get_audit_record(engine: Engine, run_id: int) -> dict:
             {"run_id": run_id},
         )
 
-        row = result.mappings().one()
-
-    return dict(row)
+        return dict(result.mappings().one())
 
 
 def get_staging_record_count(engine: Engine) -> int:
-    """Count all records across the five staging tables."""
-
-    total = 0
+    """Return the total number of records across staging tables."""
 
     with engine.connect() as connection:
-        for staging_table in SOURCE_DATASETS:
+        return sum(
+            connection.execute(
+                text(f"SELECT COUNT(*) FROM `{staging_table}`")
+            ).scalar_one()
+            for staging_table in SOURCE_DATASETS
+        )
 
-            result = connection.execute(
-                text(
-                    f"SELECT COUNT(*) FROM `{staging_table}`"
-                )
-            )
 
-            total += result.scalar_one()
+def patch_extraction(monkeypatch, datasets):
+    """Replace CSV extraction with controlled test datasets."""
 
-    return total
+    monkeypatch.setattr(
+        staging_loader,
+        "extract_csv_files",
+        lambda *args, **kwargs: datasets,
+    )
+
+
+def create_trigger(engine: Engine, statement: str) -> None:
+    """Create a SQLite trigger used to simulate database failures."""
+
+    with engine.begin() as connection:
+        connection.execute(text(statement))
+
+
+# ---------------------------------------------------------------------
+# Successful loading
+# ---------------------------------------------------------------------
 
 
 def test_successful_staging_load(
@@ -164,13 +183,9 @@ def test_successful_staging_load(
     sample_datasets,
     monkeypatch,
 ):
-    """All datasets and the SUCCESS audit record commit together."""
+    """All staging datasets and the SUCCESS audit update commit together."""
 
-    monkeypatch.setattr(
-        staging_loader,
-        "extract_csv_files",
-        lambda *args, **kwargs: sample_datasets,
-    )
+    patch_extraction(monkeypatch, sample_datasets)
 
     result = run_staging_load(test_engine)
 
@@ -184,10 +199,7 @@ def test_successful_staging_load(
     assert result["records_loaded"] == expected_records
     assert result["records_rejected"] == 0
 
-    audit = get_audit_record(
-        test_engine,
-        result["run_id"],
-    )
+    audit = get_audit_record(test_engine, result["run_id"])
 
     assert audit["status"] == "SUCCESS"
     assert audit["records_extracted"] == expected_records
@@ -197,14 +209,9 @@ def test_successful_staging_load(
 
     assert get_staging_record_count(test_engine) == expected_records
 
-    # Every table must contain records belonging to this ETL run.
-        # Every table must contain records belonging to this ETL run.
-    run_id = result["run_id"]
-
     with test_engine.connect() as connection:
         for staging_table in SOURCE_DATASETS:
-
-            query_result = connection.execute(
+            count = connection.execute(
                 text(
                     f"""
                     SELECT COUNT(*)
@@ -212,17 +219,54 @@ def test_successful_staging_load(
                     WHERE etl_run_id = :run_id
                     """
                 ),
-                {"run_id": run_id},
-            )
+                {"run_id": result["run_id"]},
+            ).scalar_one()
 
-            assert query_result.scalar_one() == 2
+            assert count == 2
+
+
+def test_deferred_finalization_keeps_run_running(
+    test_engine,
+    sample_datasets,
+    monkeypatch,
+):
+    """Staging commits while the audit run remains RUNNING."""
+
+    patch_extraction(monkeypatch, sample_datasets)
+
+    result = run_staging_load(
+        test_engine,
+        finalize_run=False,
+    )
+
+    expected_records = sum(
+        len(dataframe)
+        for dataframe in sample_datasets.values()
+    )
+
+    assert result["status"] == "RUNNING"
+    assert result["records_loaded"] == expected_records
+
+    audit = get_audit_record(test_engine, result["run_id"])
+
+    assert audit["status"] == "RUNNING"
+    assert audit["records_loaded"] == expected_records
+    assert audit["records_rejected"] == 0
+    assert audit["error_message"] is None
+
+    assert get_staging_record_count(test_engine) == expected_records
+
+
+# ---------------------------------------------------------------------
+# Extraction failures
+# ---------------------------------------------------------------------
 
 
 def test_extraction_failure_marks_run_failed(
     test_engine,
     monkeypatch,
 ):
-    """An extraction failure must be recorded in the audit table."""
+    """Extraction failures are recorded in the ETL audit table."""
 
     def raise_extraction_error(*args, **kwargs):
         raise CSVExtractionError("Test source file is missing.")
@@ -256,32 +300,30 @@ def test_extraction_failure_marks_run_failed(
     assert get_staging_record_count(test_engine) == 0
 
 
+# ---------------------------------------------------------------------
+# Transaction rollback
+# ---------------------------------------------------------------------
+
+
 def test_insert_failure_rolls_back_entire_staging_batch(
     test_engine,
     sample_datasets,
     monkeypatch,
 ):
-    """An insert failure must roll back records from every staging table."""
+    """An insert failure rolls back records from every staging table."""
 
-    monkeypatch.setattr(
-        staging_loader,
-        "extract_csv_files",
-        lambda *args, **kwargs: sample_datasets,
+    patch_extraction(monkeypatch, sample_datasets)
+
+    create_trigger(
+        test_engine,
+        """
+        CREATE TRIGGER fail_stg_orders_insert
+        BEFORE INSERT ON stg_orders
+        BEGIN
+            SELECT RAISE(ABORT, 'Simulated staging insert failure');
+        END;
+        """,
     )
-
-    # Force an insert failure when the loader reaches stg_orders.
-    with test_engine.begin() as connection:
-        connection.execute(
-            text(
-                """
-                CREATE TRIGGER fail_stg_orders_insert
-                BEFORE INSERT ON stg_orders
-                BEGIN
-                    SELECT RAISE(ABORT, 'Simulated staging insert failure');
-                END;
-                """
-            )
-        )
 
     with pytest.raises(
         StagingLoadError,
@@ -289,7 +331,6 @@ def test_insert_failure_rolls_back_entire_staging_batch(
     ):
         run_staging_load(test_engine)
 
-    # Earlier inserts must also have been rolled back.
     assert get_staging_record_count(test_engine) == 0
 
     with test_engine.connect() as connection:
@@ -312,32 +353,21 @@ def test_success_audit_failure_rolls_back_staging_batch(
     sample_datasets,
     monkeypatch,
 ):
-    """
-    A failure while updating the SUCCESS audit status must also
-    roll back all staging inserts.
-    """
+    """A failed SUCCESS audit update also rolls back staging inserts."""
 
-    monkeypatch.setattr(
-        staging_loader,
-        "extract_csv_files",
-        lambda *args, **kwargs: sample_datasets,
+    patch_extraction(monkeypatch, sample_datasets)
+
+    create_trigger(
+        test_engine,
+        """
+        CREATE TRIGGER fail_success_audit_update
+        BEFORE UPDATE ON etl_pipeline_runs
+        WHEN NEW.status = 'SUCCESS'
+        BEGIN
+            SELECT RAISE(ABORT, 'Simulated SUCCESS audit failure');
+        END;
+        """,
     )
-
-    # Fail only the SUCCESS update. The subsequent FAILED update
-    # must remain possible.
-    with test_engine.begin() as connection:
-        connection.execute(
-            text(
-                """
-                CREATE TRIGGER fail_success_audit_update
-                BEFORE UPDATE ON etl_pipeline_runs
-                WHEN NEW.status = 'SUCCESS'
-                BEGIN
-                    SELECT RAISE(ABORT, 'Simulated SUCCESS audit failure');
-                END;
-                """
-            )
-        )
 
     with pytest.raises(
         StagingLoadError,
@@ -345,21 +375,22 @@ def test_success_audit_failure_rolls_back_staging_batch(
     ):
         run_staging_load(test_engine)
 
-    # The staging transaction must have rolled back.
     assert get_staging_record_count(test_engine) == 0
 
     with test_engine.connect() as connection:
         audit = connection.execute(
             text(
                 """
-                SELECT status, records_extracted,
-                       records_loaded, error_message
+                SELECT
+                    status,
+                    records_extracted,
+                    records_loaded,
+                    error_message
                 FROM etl_pipeline_runs
                 """
             )
         ).mappings().one()
 
-    # The independent failure update must have succeeded.
     assert audit["status"] == "FAILED"
     assert audit["records_extracted"] == 10
     assert audit["records_loaded"] == 0

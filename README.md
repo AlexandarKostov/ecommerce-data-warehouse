@@ -1,96 +1,149 @@
-# E-Commerce Data Warehouse
+# E-commerce Data Warehouse
 
-A portfolio Data Engineering project focused on building an end-to-end e-commerce data warehouse using Python, MySQL, and SQL.
+<small>**Status: Work in Progress (WIP)** · **Estimated completion: 75–80%** · Documentation checkpoint: 6 November 2026</small>
 
-The project simulates an e-commerce business, generates synthetic transactional datasets, and establishes the database foundation for an ETL pipeline and analytical reporting.
+> **Project progress:** Approximately 75–80% of the planned project scope is complete. This is an estimated development milestone, not a formal code-coverage or delivery metric. The remaining work is documented in [the development roadmap](docs/ROADMAP.md).
 
-## 1. Project Overview
+A portfolio Data Engineering project that simulates an e-commerce business and builds a Python- and MySQL-based data warehouse. The project focuses on reproducible source data, reliable ETL processing, data quality, cross-dataset reconciliation, dimensional modeling, and analytical SQL.
 
-The objective is to design and implement a data warehouse that transforms operational e-commerce data into a structured analytical environment.
+> **Current checkpoint:** Synthetic data generation, CSV extraction, MySQL staging, validation, reconciliation, rejected-record persistence, and the Python test suite are implemented. The dimensional and fact loading layer and analytical workloads are still outstanding.
 
-The project follows a typical Data Engineering workflow:
+## Project status
 
-1. Generate synthetic source datasets.
-2. Extract data from CSV files.
-3. Validate and transform source records.
-4. Load raw records into MySQL staging tables.
-5. Populate dimension and fact tables.
-6. Build SQL queries for business intelligence and reporting.
+| Area | Current status |
+|---|---|
+| Synthetic source data generation | Implemented and tested |
+| Controlled data-quality dataset generation | Implemented and tested |
+| CSV extraction | Implemented and tested |
+| MySQL connection management | Implemented |
+| Staging table loading and ETL audit | Implemented and tested |
+| Record-level validation | Implemented and tested |
+| Cross-dataset order reconciliation | Implemented and tested |
+| Rejected-record persistence | Implemented and tested with mocked/controlled database connections |
+| Full MySQL integration of validation pipeline | Pending |
+| Dimension and fact loading | Not implemented |
+| Analytical SQL and reporting | Not implemented |
+| Incremental warehouse loading / SCD Type 2 | Planned |
 
-**Current development stage:** Database schema and synthetic data generation, with automated validation tests.
+The current automated test baseline is **277 passing tests** (`pytest -v`, reported 6 November 2026). This is a Python test-suite result; it is not evidence that the complete ETL pipeline has been integration-tested end to end against MySQL.
 
-## 2. Business Objectives
+## Business objectives
 
-The warehouse is designed to support business analysis across several areas:
+The planned warehouse will support analysis of:
 
 - Customer acquisition and purchasing behavior.
-- Product performance and revenue.
-- Order volume and fulfillment.
-- Payment methods and transaction performance.
-- Refunds and returned orders.
-- Data quality and ETL pipeline monitoring.
+- Product performance, revenue, cost, and profit.
+- Order volume, status, and fulfillment.
+- Payment methods, payment attempts, and refunds.
+- Returns and their impact on business performance.
+- Data quality and ETL execution reliability.
 
-## 3. Technology Stack
+## Technology stack
 
 | Technology | Purpose |
 |---|---|
-| Python | Data generation and ETL development |
-| Pandas | Data manipulation |
-| Faker | Synthetic data generation |
-| MySQL 8.0 | Data warehouse database |
-| SQL | Database design and analytics |
-| SQLAlchemy | Database connectivity |
-| PyMySQL | MySQL driver |
-| Pytest | Automated testing |
+| Python | Synthetic data generation and ETL implementation |
+| Pandas | CSV extraction and tabular data processing |
+| Faker | Synthetic source data |
+| MySQL 8.0+ | Relational staging and warehouse database |
+| SQLAlchemy | Database engine and transactional operations |
+| PyMySQL | MySQL DBAPI driver |
+| python-dotenv | Environment-based database configuration |
+| pytest | Automated tests |
 | Git | Version control |
 
-## 4. Data Warehouse Architecture
-
-The planned architecture separates source data, staging, dimensional modeling, and analytics.
+## Architecture
 
 ```text
-Synthetic Data Generation
+Synthetic data generation
           |
           v
-      CSV Files
+      CSV datasets
           |
           v
-    Data Extraction
+     CSV extraction
           |
           v
-   Data Validation
+    MySQL staging
           |
           v
- Data Transformation
+ Record-level validation
           |
           v
-    MySQL Staging
+ Cross-dataset reconciliation
           |
-          v
- Dimensional Modeling
-          |
-          +------------------+
-          |                  |
-          v                  v
-     Dimensions           Facts
-          |                  |
-          +--------+---------+
-                   |
-                   v
-             SQL Analytics
+          +------------------------+
+          |                        |
+          v                        v
+     Accepted records        Rejected records
+          |                        |
+          |                        v
+          |               etl_rejected_records
+          |                        |
+          +------------+-----------+
+                       |
+                       v
+          Dimension and fact loading
+                 (planned)
+                       |
+                       v
+                SQL analytics
+                 (planned)
 ```
 
-The ETL and analytics stages are planned implementation milestones, not yet completed functionality.
+The current implemented pipeline ends at validated/reconciled staging data and rejection persistence. Dimension/fact loading and analytics are future milestones.
 
-## 5. Database Design
+## Repository structure
 
-The MySQL database is named `ecommerce_dw`.
+```text
+.
+├── config/
+│   └── data_generation.py
+├── data/
+│   ├── raw/
+│   └── quality/
+├── docs/
+├── sql/
+│   ├── 01_create_schema.sql
+│   └── 02_create_rejected_records_table.sql
+├── src/
+│   ├── data_generation/
+│   │   ├── generator.py
+│   │   ├── quality_dataset_generator.py
+│   │   └── quality_injector.py
+│   ├── database/
+│   │   └── connection.py
+│   ├── extraction/
+│   │   └── csv_extractor.py
+│   ├── loading/
+│   │   ├── staging_loader.py
+│   │   └── rejected_records_loader.py
+│   └── transformation/
+│       ├── validation_result.py
+│       ├── validation_pipeline.py
+│       ├── validation/
+│       │   ├── customers.py
+│       │   ├── products.py
+│       │   ├── orders.py
+│       │   ├── order_items.py
+│       │   └── payments.py
+│       └── reconciliation/
+│           └── orders.py
+├── tests/
+├── .env.example
+├── .gitignore
+├── pytest.ini
+├── requirements.txt
+└── README.md
+```
 
-The initial schema contains 13 tables.
+The repository also contains a `generator.py.bak` backup file; it is not part of the documented runtime architecture.
 
-### Staging Tables
+## Database
 
-These tables are designed to preserve incoming source data before warehouse transformations.
+The active MySQL database is **`ecommerce_dw`**. The base schema (`sql/01_create_schema.sql`) creates 13 tables. Migration 02 (`sql/02_create_rejected_records_table.sql`) adds `etl_rejected_records`, bringing the current schema to **14 tables**.
+
+### Staging tables
 
 - `stg_customers`
 - `stg_products`
@@ -98,7 +151,9 @@ These tables are designed to preserve incoming source data before warehouse tran
 - `stg_order_items`
 - `stg_payments`
 
-### Dimension Tables
+Incoming source fields are stored as text in staging so validation can inspect raw values before converting them into analytical types. Staging rows are associated with an ETL run through `etl_run_id`.
+
+### Dimension tables
 
 - `dim_customers`
 - `dim_products`
@@ -106,32 +161,25 @@ These tables are designed to preserve incoming source data before warehouse tran
 - `dim_payment_methods`
 - `dim_order_statuses`
 
-### Fact Tables
+These tables are defined in the schema. Their ETL loading processes have not yet been implemented.
 
-- `fact_sales` — designed around one row per order item.
-- `fact_payments` — designed around individual payment transactions.
+### Fact tables
 
-### ETL Monitoring
+- `fact_sales` — designed at one row per order item.
+- `fact_payments` — designed at one row per payment transaction.
 
-- `etl_pipeline_runs` — designed to track ETL execution and processing information.
+These tables are defined in the schema. Their ETL loading processes have not yet been implemented.
 
-## 6. Synthetic Data Generation
+### ETL control and data quality
 
-The project uses Python and Faker to generate realistic synthetic e-commerce datasets.
+- `etl_pipeline_runs` — records pipeline run status and aggregate counters.
+- `etl_rejected_records` — stores rejected staging records, their source identifiers, JSON rejection reasons, and raw source payload.
 
-### Target Dataset Sizes
+See [Database Schema](docs/DATABASE_SCHEMA.md) for table details.
 
-| Dataset | Target records |
-|---|---:|
-| Customers | 10,000 |
-| Products | 1,000 |
-| Orders | 25,000 |
-| Order items | Variable |
-| Payments | Variable |
+## Source datasets
 
-The number of order items and payments depends on the generated order scenarios.
-
-### Generated Datasets
+The extraction layer expects five CSV files under `data/raw/`:
 
 - `customers.csv`
 - `products.csv`
@@ -139,194 +187,111 @@ The number of order items and payments depends on the generated order scenarios.
 - `order_items.csv`
 - `payments.csv`
 
-### Reproducibility
+The synthetic generator uses a fixed seed and configured reference date to support reproducible datasets under the same configuration and software environment. The project also has a separate quality-data workflow under `data/quality/`; those files contain intentionally introduced quality issues and should not be confused with the clean baseline files.
 
-The generation configuration uses:
+See [ETL Pipeline](docs/ETL_PIPELINE.md) and [Data Validation](docs/DATA_VALIDATION.md).
 
-- Random seed: `42`
-- Reference date: `2026-11-05`
-
-Using a fixed seed makes it possible to reproduce the same synthetic datasets under the same configuration and software environment.
-
-### Payment Scenarios
-
-The payment generator models several business scenarios:
-
-- Pending orders receive pending payments.
-- Cancelled orders receive failed payments.
-- Returned orders receive completed payments and refunds.
-- Other orders receive completed payments, with some failed attempts followed by successful retries.
-
-Payment amounts are calculated using decimal arithmetic to avoid floating-point rounding issues in financial calculations.
-
-## 7. Data Quality Strategy
-
-The project is designed to introduce controlled data-quality issues into source datasets in a later development stage.
-
-The configuration currently defines the following target rates:
-
-| Data quality issue | Target rate |
-|---|---:|
-| Missing customer email | 2% |
-| Duplicate customers | 1% |
-| Invalid product price | 1% |
-| Missing order date | 0.5% |
-| Invalid customer reference | 0.5% |
-| Duplicate payments | 1% |
-
-These are configuration targets. The intentional injection and ETL handling of these issues are future implementation tasks.
-
-The objective is to demonstrate validation, error handling, and reliable processing rather than silently discarding invalid records.
-
-## 8. Project Structure
-
-```text
-ecommerce-data-warehouse/
-│
-├── config/
-│   └── data_generation.py
-│
-├── data/
-│   ├── raw/
-│   └── processed/
-│
-├── logs/
-│
-├── sql/
-│   └── 01_create_schema.sql
-│
-├── src/
-│   ├── data_generation/
-│   │   ├── __init__.py
-│   │   └── generator.py
-│   ├── extraction/
-│   ├── transformation/
-│   ├── loading/
-│   └── database/
-│
-├── tests/
-│   └── test_data_generation.py
-│
-├── .gitignore
-├── pytest.ini
-├── requirements.txt
-└── README.md
-```
-
-## 9. Installation and Setup
+## Setup
 
 ### Prerequisites
 
-- Python 3.14
-- MySQL Server 8.0
-- Git
+- Python version compatible with the pinned project dependencies (the current development environment uses Python 3.14.8).
+- MySQL Server 8.0+.
+- MySQL Workbench or another MySQL client.
+- Git.
 
-### Clone the repository
+### Clone and install
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/AlexandarKostov/ecommerce-data-warehouse.git
 cd ecommerce-data-warehouse
-```
 
-### Create a virtual environment
-
-```bash
 python -m venv venv
-```
+source venv/Scripts/activate       # Git Bash on Windows
 
-Activate it in Git Bash:
-
-```bash
-source venv/Scripts/activate
-```
-
-### Install dependencies
-
-```bash
 python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-### Configure MySQL
+### Configure environment
 
-Create a database named:
+Copy `.env.example` to `.env` and provide local connection settings. Do not commit `.env` or publish credentials.
 
-```sql
-CREATE DATABASE ecommerce_dw;
+```dotenv
+DB_HOST=127.0.0.1
+DB_PORT=3306
+DB_DATABASE=ecommerce_dw
+DB_USERNAME=your_mysql_username
+DB_PASSWORD=your_mysql_password
 ```
 
-Execute the schema script:
+The Python connection module loads the project-root `.env` file. The active database name in the current project is `ecommerce_dw`.
 
-```text
-sql/01_create_schema.sql
-```
+### Database initialization
 
-This creates the initial 13-table database structure.
+For a fresh database, execute `sql/01_create_schema.sql` in MySQL Workbench. Then execute `sql/02_create_rejected_records_table.sql`.
 
-## 10. Running the Data Generator
+**Existing development database:** `ecommerce_dw` already has the base schema and rejected-record migration applied. Do not rerun the staging pipeline merely to verify the schema: staging loads append records and create a new ETL run.
 
-The generator is located at:
+## Running the project
 
-```text
-src/data_generation/generator.py
-```
-
-Run it from the project root:
+### Generate source datasets
 
 ```bash
 python -m src.data_generation.generator
 ```
 
-The current execution block generates a small dataset for development and testing. The configured full dataset sizes will be connected to the main execution workflow in a subsequent development stage.
+The generator's current execution behavior and configured dataset sizes are described in `config/data_generation.py` and the generator module. Generated CSV files are written under `data/raw/`.
 
-Generated CSV files are stored in:
-
-```text
-data/raw/
-```
-
-## 11. Running Automated Tests
-
-The project uses Pytest to validate synthetic data generation and business rules.
-
-Run the complete test suite:
+### Run automated tests
 
 ```bash
 python -m pytest -v
 ```
 
-Current tests cover:
+Latest reported baseline: **277 passed**.
 
-- Source ID uniqueness.
-- Referential integrity.
-- Order and order-item relationships.
-- Payment generation rules.
-- Required fields.
-- Financial calculations.
-- Date validation.
-- Reproducibility.
-- Rejection of invalid payment inputs.
+### ETL entry points
 
-## 12. Development Roadmap
+The implementation includes:
 
-- [x] Initialize project structure.
-- [x] Configure Python environment and dependencies.
-- [x] Design initial MySQL warehouse schema.
-- [x] Implement synthetic customer generation.
-- [x] Implement synthetic product generation.
-- [x] Implement synthetic order generation.
-- [x] Implement order-item generation.
-- [x] Implement payment and refund scenarios.
-- [x] Add automated data-generation tests.
-- [ ] Implement source data extraction.
-- [ ] Implement staging table loading.
-- [ ] Implement data validation and transformation.
-- [ ] Implement dimensional and fact table loading.
-- [ ] Introduce controlled data-quality issues.
-- [ ] Add ETL execution logging and monitoring.
-- [ ] Develop analytical SQL queries and reports.
-- [ ] Add integration tests and incremental loading.
+- `run_staging_load(...)` in `src/loading/staging_loader.py`.
+- `run_validation_pipeline(...)` in `src/transformation/validation_pipeline.py`.
+- `run_full_etl_pipeline(...)` in `src/transformation/validation_pipeline.py`.
 
-## 13. Project Status
+The full pipeline first creates a staging run in deferred-finalization mode, then validates/reconciles it and finalizes the audit record. These entry points are implemented, but a controlled end-to-end MySQL integration run remains a pending task.
 
-This project is being developed incrementally, with an emphasis on data integrity, reproducibility, financial accuracy, relational modeling, and maintainable ETL architecture.
+**Operational caution:** `run_staging_load` appends a new run to the configured database. Do not run it against the existing `ecommerce_dw` dataset casually. Plan and verify an intentional integration run before executing it.
+
+## Current database checkpoint
+
+As verified in MySQL Workbench on 6 November 2026:
+
+| Check | Observed result |
+|---|---:|
+| Database | `ecommerce_dw` |
+| Existing baseline ETL run | `run_id = 1` |
+| Baseline run status | `SUCCESS` |
+| Records extracted | 140,081 |
+| Records loaded | 140,081 |
+| Records rejected | 0 |
+| `etl_rejected_records` row count | 0 |
+
+Run 1 is the original staging baseline. The validation pipeline has not yet been run as a controlled MySQL integration test against this baseline. Preserve run 1 and its staging rows.
+
+## Documentation
+
+- [Project status](docs/PROJECT_STATUS.md)
+- [Architecture](docs/ARCHITECTURE.md)
+- [Database schema](docs/DATABASE_SCHEMA.md)
+- [ETL pipeline](docs/ETL_PIPELINE.md)
+- [Data validation](docs/DATA_VALIDATION.md)
+- [Data reconciliation](docs/DATA_RECONCILIATION.md)
+- [Testing](docs/TESTING.md)
+- [Roadmap](docs/ROADMAP.md)
+
+## Project status and contribution approach
+
+This repository is intentionally **WIP**. The current checkpoint documents what has been implemented and tested, and what remains. See `docs/PROJECT_STATUS.md` and `docs/ROADMAP.md` before continuing development.
+
+The project prioritizes data integrity, reproducibility, explicit data-quality handling, financial precision, relational modeling, transaction safety, and maintainable Python code.
